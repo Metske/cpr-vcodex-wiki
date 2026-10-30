@@ -69,13 +69,23 @@ void WikiSearchActivity::onEnter() {
         uint32_t idxSec = footer[4] | (footer[5] << 8) | (footer[6] << 16) | (footer[7] << 24);
         uint32_t chunkSec = footer[8] | (footer[9] << 8) | (footer[10] << 16) | (footer[11] << 24);
         uint32_t fontSec = footer[12] | (footer[13] << 8) | (footer[14] << 16) | (footer[15] << 24);
-        uint8_t hasImg = (footer[16] & 1) ? 1 : 0;
+        uint32_t imageFlags = footer[16] | (footer[17] << 8) | (footer[18] << 16) | (footer[19] << 24);
+        uint8_t hasImg = (imageFlags & 0x1u) ? 1 : 0;
+        uint8_t footerHasDates = cfg.hasDates;
+        if (imageFlags & 0x2u) {
+          footerHasDates = (imageFlags & 0x4u) ? WikiConfigData::DATES_PRESENT : WikiConfigData::DATES_ABSENT;
+        }
         if (idxSec > 0 && (cfg.indexSector != idxSec || cfg.chunksSector != chunkSec ||
-                           cfg.fontSector != fontSec || cfg.hasImages != hasImg)) {
+                           cfg.fontSector != fontSec || cfg.hasImages != hasImg ||
+                           cfg.hasDates != footerHasDates)) {
+          const bool indexChanged = (cfg.indexSector != idxSec);
           cfg.indexSector = idxSec;
           cfg.chunksSector = chunkSec;
           cfg.fontSector = fontSec;
           cfg.hasImages = hasImg;
+          cfg.hasDates = (imageFlags & 0x2u)
+                             ? footerHasDates
+                             : (indexChanged ? WikiConfigData::DATES_UNKNOWN : cfg.hasDates);
           WikiConfig::save();
         }
       }
@@ -505,12 +515,25 @@ bool WikiSearchActivity::openOnThisDayFromTimestamp(uint32_t timestamp) {
 }
 
 void WikiSearchActivity::openOnThisDayArticle() {
+  if (!WikiConfig::resolveHasDates(searchEngine_, reader_)) {
+    static constexpr const char* kOkOption[] = {"OK"};
+    optionPopup_.show("Loaded .img has no date articles", kOkOption, 1, 0,
+                      [this](int) { requestUpdate(); });
+    requestUpdate();
+    return;
+  }
+
   TimeUtils::applySystemClockFromRtc(false);
   const auto dateInfo = HeaderDateUtils::getDisplayDateInfo();
   if (TimeUtils::isClockValid(dateInfo.timestamp)) {
     if (openOnThisDayFromTimestamp(dateInfo.timestamp)) {
       return;
     }
+    static constexpr const char* kOkOption[] = {"OK"};
+    optionPopup_.show("Date article not found in .img", kOkOption, 1, 0,
+                      [this](int) { requestUpdate(); });
+    requestUpdate();
+    return;
   }
 
   pendingOnThisDayAfterDateSync_ = true;
@@ -584,6 +607,7 @@ void WikiSearchActivity::loop() {
                                      reader_.mount(-1, -1, -1, -1);
                                      rootSector_ = WikiConfig::get().indexSector;
                                      searchEngine_.setRootSector(rootSector_);
+                                     WikiConfig::resolveHasDates(searchEngine_, reader_);
                                      viewState_ = ViewState::SearchReady;
                                      requestUpdate();
                                      return;

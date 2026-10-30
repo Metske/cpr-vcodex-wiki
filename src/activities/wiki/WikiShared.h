@@ -45,6 +45,8 @@ class WikiScratchScope {
   WikiScratchScope& operator=(const WikiScratchScope&) = delete;
 };
 
+class WikiSearchEngine;
+
 struct WikiRecentEntry {
   char title[96] = "";
   uint64_t offset = 0;
@@ -56,11 +58,15 @@ struct WikiRecentEntry {
  */
 struct WikiConfigData {
   static constexpr size_t MAX_RECENT_ITEMS = 5;
+  static constexpr uint8_t DATES_ABSENT = 0;
+  static constexpr uint8_t DATES_PRESENT = 1;
+  static constexpr uint8_t DATES_UNKNOWN = 2;
 
   uint32_t indexSector = 0;
   uint32_t chunksSector = 0;
   uint32_t fontSector = 0;
   uint8_t hasImages = 1;
+  uint8_t hasDates = DATES_UNKNOWN;
   char imagePath[128] = "";
 
   char resumeTitle[128] = "";
@@ -94,6 +100,7 @@ class WikiConfig {
   static bool save();
   static void clear();
   static bool configureFromImageFile(const std::string& imgPath);
+  static bool resolveHasDates(WikiSearchEngine& engine, SdRawReader& reader);
   static void onAcquire();
   static void onRelease();
 };

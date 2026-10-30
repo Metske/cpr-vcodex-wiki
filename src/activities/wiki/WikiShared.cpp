@@ -19,6 +19,7 @@
 #include <FontDecompressor.h>
 #include "ImageToneMapper.h"
 #include "WikiGUI.h"
+#include "WikiSearchEngine.h"
 #include "components/UITheme.h"
 
 static const char* TAG = "WikiShared";
@@ -196,6 +197,9 @@ void loadConfigFromDisk(WikiConfigData& cfg) {
         cfg.fontSector = static_cast<uint32_t>(std::strtoul(line + 12, nullptr, 10));
       } else if (std::strncmp(line, "HAS_IMAGES=", 11) == 0) {
         cfg.hasImages = static_cast<uint8_t>(std::strtoul(line + 11, nullptr, 10) ? 1 : 0);
+      } else if (std::strncmp(line, "HAS_DATES=", 10) == 0) {
+        const unsigned long dv = std::strtoul(line + 10, nullptr, 10);
+        cfg.hasDates = (dv > 0) ? WikiConfigData::DATES_PRESENT : WikiConfigData::DATES_ABSENT;
       } else if (std::strncmp(line, "RESUME_TITLE=", 13) == 0) {
         std::strncpy(cfg.resumeTitle, line + 13, sizeof(cfg.resumeTitle) - 1);
         cfg.resumeTitle[sizeof(cfg.resumeTitle) - 1] = '\0';
@@ -354,6 +358,13 @@ bool WikiConfig::save() {
       content, sizeof(content),
       "IMAGE_PATH=%s\nINDEX_SECTOR=%u\nCHUNKS_SECTOR=%u\nFONT_SECTOR=%u\nHAS_IMAGES=%u\n",
       cfg.imagePath, cfg.indexSector, cfg.chunksSector, cfg.fontSector, static_cast<unsigned>(cfg.hasImages));
+  if (pos > 0 && static_cast<size_t>(pos) < sizeof(content) && cfg.hasDates != WikiConfigData::DATES_UNKNOWN) {
+    int dn = std::snprintf(content + pos, sizeof(content) - pos, "HAS_DATES=%u\n",
+                           static_cast<unsigned>(cfg.hasDates == WikiConfigData::DATES_PRESENT ? 1 : 0));
+    if (dn > 0 && static_cast<size_t>(pos + dn) < sizeof(content)) {
+      pos += dn;
+    }
+  }
   if (pos > 0 && static_cast<size_t>(pos) < sizeof(content) && cfg.resumeTitle[0] != '\0') {
     int n = std::snprintf(content + pos, sizeof(content) - pos,
                           "RESUME_TITLE=%s\nRESUME_OFFSET=%llu\nRESUME_PAGE=%d\nRESUME_LINK=%d\nRESUME_OFFSETS=",
@@ -418,7 +429,12 @@ bool WikiConfig::configureFromImageFile(const std::string& imgPath) {
       cfg.indexSector = indexSector;
       cfg.chunksSector = chunksSector;
       cfg.fontSector = fontSector;
-      cfg.hasImages = (imageFlags & 1) ? 1 : 0;
+      cfg.hasImages = (imageFlags & 0x1u) ? 1 : 0;
+      if (imageFlags & 0x2u) {
+        cfg.hasDates = (imageFlags & 0x4u) ? WikiConfigData::DATES_PRESENT : WikiConfigData::DATES_ABSENT;
+      } else {
+        cfg.hasDates = WikiConfigData::DATES_UNKNOWN;
+      }
       std::strncpy(cfg.imagePath, imgPath.c_str(), sizeof(cfg.imagePath) - 1);
       cfg.imagePath[sizeof(cfg.imagePath) - 1] = '\0';
       cfg.clearResume();
@@ -428,6 +444,43 @@ bool WikiConfig::configureFromImageFile(const std::string& imgPath) {
   }
   f.close();
   return ok;
+}
+
+bool WikiConfig::resolveHasDates(WikiSearchEngine& engine, SdRawReader& reader) {
+  WikiConfigData& cfg = get();
+  if (cfg.hasDates != WikiConfigData::DATES_UNKNOWN) {
+    return cfg.hasDates == WikiConfigData::DATES_PRESENT;
+  }
+  if (cfg.indexSector == 0) {
+    return false;
+  }
+  if (!reader.isMounted() && !reader.mount(-1, -1, -1, -1)) {
+    return false;
+  }
+  engine.setRootSector(cfg.indexSector);
+
+  // Backwards-compatible B-Tree probe for legacy .img archives built before CPR1 FlagDatesKnown (0x2):
+  // Check 6 ordinary mid-month dates spread across the year so partial dumps (e.g. top_maxi, which
+  // only contains Feb 25 & Jun 6) resolve to false while full Wikipedia dumps resolve to true in <5 ms.
+  static constexpr const char* kProbes[6][3] = {
+      {"January 15", "january 15", "15 january"},
+      {"March 19", "march 19", "19 march"},
+      {"May 12", "may 12", "12 may"},
+      {"July 22", "july 22", "22 july"},
+      {"September 18", "september 18", "18 september"},
+      {"November 14", "november 14", "14 november"},
+  };
+  int found = 0;
+  uint64_t dummyOffset = 0;
+  for (int i = 0; i < 6; ++i) {
+    if (engine.search(kProbes[i][0], dummyOffset) || engine.search(kProbes[i][1], dummyOffset) ||
+        engine.search(kProbes[i][2], dummyOffset)) {
+      ++found;
+    }
+  }
+  cfg.hasDates = (found >= 5) ? WikiConfigData::DATES_PRESENT : WikiConfigData::DATES_ABSENT;
+  save();
+  return cfg.hasDates == WikiConfigData::DATES_PRESENT;
 }
 
 namespace WikiJpeg {
